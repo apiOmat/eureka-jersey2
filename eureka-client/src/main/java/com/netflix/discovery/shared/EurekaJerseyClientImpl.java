@@ -1,8 +1,28 @@
 package com.netflix.discovery.shared;
 
+import com.netflix.discovery.converters.wrappers.CodecWrappers;
+import com.netflix.discovery.converters.wrappers.DecoderWrapper;
+import com.netflix.discovery.converters.wrappers.EncoderWrapper;
+import com.netflix.discovery.provider.DiscoveryJerseyProvider;
+import com.netflix.servo.monitor.*;
+import org.apache.http.client.params.ClientPNames;
+import org.apache.http.conn.ClientConnectionManager;
+import org.apache.http.conn.scheme.Scheme;
+import org.apache.http.conn.scheme.SchemeRegistry;
+import org.apache.http.conn.ssl.SSLSocketFactory;
+import org.apache.http.params.CoreProtocolPNames;
+import org.glassfish.jersey.apache.connector.ApacheClientProperties;
+import org.glassfish.jersey.apache.connector.ApacheConnectorProvider;
+import org.glassfish.jersey.client.ClientConfig;
+import org.glassfish.jersey.client.ClientProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
+import javax.ws.rs.client.Client;
+import javax.ws.rs.client.ClientBuilder;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.security.KeyStore;
@@ -11,30 +31,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-
-import com.netflix.discovery.converters.wrappers.CodecWrappers;
-import com.netflix.discovery.converters.wrappers.DecoderWrapper;
-import com.netflix.discovery.converters.wrappers.EncoderWrapper;
-import com.netflix.discovery.provider.DiscoveryJerseyProvider;
-import com.netflix.servo.monitor.BasicCounter;
-import com.netflix.servo.monitor.BasicTimer;
-import com.netflix.servo.monitor.Counter;
-import com.netflix.servo.monitor.MonitorConfig;
-import com.netflix.servo.monitor.Monitors;
-import com.netflix.servo.monitor.Stopwatch;
-import com.sun.jersey.api.client.config.ClientConfig;
-import com.sun.jersey.client.apache4.ApacheHttpClient4;
-import com.sun.jersey.client.apache4.config.ApacheHttpClient4Config;
-import com.sun.jersey.client.apache4.config.DefaultApacheHttpClient4Config;
-import org.apache.http.client.params.ClientPNames;
-import org.apache.http.conn.scheme.Scheme;
-import org.apache.http.conn.scheme.SchemeRegistry;
-import org.apache.http.conn.ssl.SSLSocketFactory;
-import org.apache.http.params.CoreProtocolPNames;
-import org.apache.http.params.HttpConnectionParams;
-import org.apache.http.params.HttpParams;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import static com.netflix.discovery.util.DiscoveryBuildInfo.buildVersion;
 
@@ -52,7 +48,7 @@ public class EurekaJerseyClientImpl implements EurekaJerseyClient {
     private static final int HTTPS_PORT = 443;
     private static final String KEYSTORE_TYPE = "JKS";
 
-    private final ApacheHttpClient4 apacheHttpClient;
+    private final Client apacheHttpClient;
 
     ClientConfig jerseyClientConfig;
 
@@ -69,17 +65,19 @@ public class EurekaJerseyClientImpl implements EurekaJerseyClient {
                 }
             });
 
-    public EurekaJerseyClientImpl(int connectionTimeout, int readTimeout, final int connectionIdleTimeout,
-                              ClientConfig clientConfig) {
+    public EurekaJerseyClientImpl(
+            int connectionTimeout,
+            int readTimeout,
+            final int connectionIdleTimeout,
+            ClientConfig clientConfig) {
+
         try {
             jerseyClientConfig = clientConfig;
-            jerseyClientConfig.getClasses().add(DiscoveryJerseyProvider.class);
-            apacheHttpClient = ApacheHttpClient4.create(jerseyClientConfig);
-            HttpParams params = apacheHttpClient.getClientHandler().getHttpClient().getParams();
-
-            HttpConnectionParams.setConnectionTimeout(params, connectionTimeout);
-            HttpConnectionParams.setSoTimeout(params, readTimeout);
-
+            jerseyClientConfig.register(DiscoveryJerseyProvider.class);
+            jerseyClientConfig.connectorProvider(new ApacheConnectorProvider());
+            jerseyClientConfig.property(ClientProperties.CONNECT_TIMEOUT, connectionTimeout);
+            jerseyClientConfig.property(ClientProperties.READ_TIMEOUT, readTimeout);
+            apacheHttpClient = ClientBuilder.newClient(jerseyClientConfig);
             eurekaConnCleaner.scheduleWithFixedDelay(
                     new ConnectionCleanerTask(connectionIdleTimeout), HTTP_CONNECTION_CLEANER_INTERVAL_MS,
                     HTTP_CONNECTION_CLEANER_INTERVAL_MS,
@@ -90,7 +88,7 @@ public class EurekaJerseyClientImpl implements EurekaJerseyClient {
     }
 
     @Override
-    public ApacheHttpClient4 getClient() {
+    public Client getClient() {
         return apacheHttpClient;
     }
 
@@ -103,7 +101,7 @@ public class EurekaJerseyClientImpl implements EurekaJerseyClient {
             eurekaConnCleaner.shutdown();
         }
         if (apacheHttpClient != null) {
-            apacheHttpClient.destroy();
+            apacheHttpClient.close();
         }
     }
 
@@ -201,13 +199,17 @@ public class EurekaJerseyClientImpl implements EurekaJerseyClient {
         public EurekaJerseyClient build() {
             MyDefaultApacheHttpClient4Config config = new MyDefaultApacheHttpClient4Config();
             try {
-                return new EurekaJerseyClientImpl(connectionTimeout, readTimeout, connectionIdleTimeout, config);
+                return new EurekaJerseyClientImpl(
+                        connectionTimeout,
+                        readTimeout,
+                        connectionIdleTimeout,
+                        config);
             } catch (Throwable e) {
                 throw new RuntimeException("Cannot create Jersey client ", e);
             }
         }
 
-        class MyDefaultApacheHttpClient4Config extends DefaultApacheHttpClient4Config {
+        class MyDefaultApacheHttpClient4Config extends ClientConfig {
             MyDefaultApacheHttpClient4Config() {
                 MonitoredConnectionManager cm;
 
@@ -224,34 +226,35 @@ public class EurekaJerseyClientImpl implements EurekaJerseyClient {
                 }
 
                 DiscoveryJerseyProvider discoveryJerseyProvider = new DiscoveryJerseyProvider(encoderWrapper, decoderWrapper);
-                getSingletons().add(discoveryJerseyProvider);
+//                getSingletons().add(discoveryJerseyProvider);
+                register(discoveryJerseyProvider);
 
                 // Common properties to all clients
                 cm.setDefaultMaxPerRoute(maxConnectionsPerHost);
                 cm.setMaxTotal(maxTotalConnections);
-                getProperties().put(ApacheHttpClient4Config.PROPERTY_CONNECTION_MANAGER, cm);
+                property(ApacheClientProperties.CONNECTION_MANAGER, cm);
 
                 String fullUserAgentName = (userAgent == null ? clientName : userAgent) + "/v" + buildVersion();
-                getProperties().put(CoreProtocolPNames.USER_AGENT, fullUserAgentName);
+                property(CoreProtocolPNames.USER_AGENT, fullUserAgentName);
 
                 // To pin a client to specific server in case redirect happens, we handle redirects directly
                 // (see DiscoveryClient.makeRemoteCall methods).
-                getProperties().put(PROPERTY_FOLLOW_REDIRECTS, Boolean.FALSE);
-                getProperties().put(ClientPNames.HANDLE_REDIRECTS, Boolean.FALSE);
+                property(ClientProperties.FOLLOW_REDIRECTS, Boolean.FALSE);
+                property(ClientPNames.HANDLE_REDIRECTS, Boolean.FALSE);
 
             }
 
             private void addProxyConfiguration(MonitoredConnectionManager cm) {
                 if (proxyUserName != null && proxyPassword != null) {
-                    getProperties().put(ApacheHttpClient4Config.PROPERTY_PROXY_USERNAME, proxyUserName);
-                    getProperties().put(ApacheHttpClient4Config.PROPERTY_PROXY_PASSWORD, proxyPassword);
+                    property(ClientProperties.PROXY_USERNAME, proxyUserName);
+                    property(ClientProperties.PROXY_PASSWORD, proxyPassword);
                 } else {
                     // Due to bug in apache client, user name/password must always be set.
                     // Otherwise proxy configuration is ignored.
-                    getProperties().put(ApacheHttpClient4Config.PROPERTY_PROXY_USERNAME, "guest");
-                    getProperties().put(ApacheHttpClient4Config.PROPERTY_PROXY_PASSWORD, "guest");
+                    property(ClientProperties.PROXY_USERNAME, "guest");
+                    property(ClientProperties.PROXY_PASSWORD, "guest");
                 }
-                getProperties().put(DefaultApacheHttpClient4Config.PROPERTY_PROXY_URI, "http://" + proxyHost + ":" + proxyPort);
+                property(ClientProperties.PROXY_URI, "http://" + proxyHost + ":" + proxyPort);
             }
 
             private MonitoredConnectionManager createSystemSslCM() {
@@ -320,11 +323,10 @@ public class EurekaJerseyClientImpl implements EurekaJerseyClient {
         public void run() {
             Stopwatch start = executionTimeStats.start();
             try {
-                apacheHttpClient
-                        .getClientHandler()
-                        .getHttpClient()
-                        .getConnectionManager()
-                        .closeIdleConnections(connectionIdleTimeout, TimeUnit.SECONDS);
+                ClientConnectionManager cm = (ClientConnectionManager) apacheHttpClient
+                        .getConfiguration()
+                        .getProperty(ApacheClientProperties.CONNECTION_MANAGER);
+                cm.closeIdleConnections(connectionIdleTimeout, TimeUnit.SECONDS);
             } catch (Throwable e) {
                 s_logger.error("Cannot clean connections", e);
                 cleanupFailed.increment();

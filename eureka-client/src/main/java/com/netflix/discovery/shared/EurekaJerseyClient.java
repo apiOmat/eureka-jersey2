@@ -1,13 +1,13 @@
 package com.netflix.discovery.shared;
 
-import com.sun.jersey.client.apache4.ApacheHttpClient4;
+import javax.ws.rs.client.Client;
 
 /**
  * @author David Liu
  */
 public interface EurekaJerseyClient {
 
-    ApacheHttpClient4 getClient();
+    Client getClient();
 
     /**
      * Clean up resources.

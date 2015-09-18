@@ -16,52 +16,12 @@
 
 package com.netflix.discovery;
 
-import javax.annotation.Nullable;
-import javax.annotation.PreDestroy;
-import javax.inject.Singleton;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.Response.Status;
-import javax.ws.rs.core.UriBuilder;
-import java.io.IOException;
-import java.net.URI;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
-import java.util.TimerTask;
-import java.util.TreeMap;
-import java.util.TreeSet;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.SynchronousQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.inject.Inject;
 import com.google.inject.Provider;
-import com.netflix.appinfo.ApplicationInfoManager;
-import com.netflix.appinfo.EurekaAccept;
-import com.netflix.appinfo.EurekaClientIdentity;
-import com.netflix.appinfo.HealthCheckCallback;
-import com.netflix.appinfo.HealthCheckCallbackToHandlerBridge;
-import com.netflix.appinfo.HealthCheckHandler;
-import com.netflix.appinfo.InstanceInfo;
+import com.netflix.appinfo.*;
 import com.netflix.appinfo.InstanceInfo.ActionType;
 import com.netflix.appinfo.InstanceInfo.InstanceStatus;
 import com.netflix.discovery.shared.Application;
@@ -74,20 +34,36 @@ import com.netflix.servo.annotations.DataSourceType;
 import com.netflix.servo.monitor.Counter;
 import com.netflix.servo.monitor.Monitors;
 import com.netflix.servo.monitor.Stopwatch;
-import com.sun.jersey.api.client.ClientResponse;
-import com.sun.jersey.api.client.WebResource;
-import com.sun.jersey.api.client.filter.ClientFilter;
-import com.sun.jersey.api.client.filter.GZIPContentEncodingFilter;
-import com.sun.jersey.client.apache4.ApacheHttpClient4;
+import org.glassfish.jersey.message.GZipEncoder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
+import javax.annotation.PreDestroy;
+import javax.inject.Singleton;
+import javax.ws.rs.client.*;
+import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
+import javax.ws.rs.core.Response.Status;
+import javax.ws.rs.core.UriBuilder;
+import java.io.IOException;
+import java.net.URI;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static com.netflix.discovery.EurekaClientNames.METRIC_REGISTRATION_PREFIX;
 import static com.netflix.discovery.EurekaClientNames.METRIC_REGISTRY_PREFIX;
 
 /**
  * The class that is instrumental for interactions with <tt>Eureka Server</tt>.
- *
+ * <p>
  * <p>
  * <tt>Eureka Client</tt> is responsible for a) <em>Registering</em> the
  * instance with <tt>Eureka Server</tt> b) <em>Renewal</em>of the lease with
@@ -97,7 +73,7 @@ import static com.netflix.discovery.EurekaClientNames.METRIC_REGISTRY_PREFIX;
  * d) <em>Querying</em> the list of services/instances registered with
  * <tt>Eureka Server</tt>
  * <p>
- *
+ * <p>
  * <p>
  * <tt>Eureka Client</tt> needs a configured list of <tt>Eureka Server</tt>
  * {@link java.net.URL}s to talk to.These {@link java.net.URL}s are typically amazon elastic eips
@@ -107,7 +83,6 @@ import static com.netflix.discovery.EurekaClientNames.METRIC_REGISTRY_PREFIX;
  *
  * @author Karthik Ranganathan, Greg Kim
  * @author Spencer Gibb
- *
  */
 @Singleton
 public class DiscoveryClient implements EurekaClient {
@@ -177,7 +152,7 @@ public class DiscoveryClient implements EurekaClient {
     private final AtomicReference<String> lastRegisterRedirect = new AtomicReference<String>();
     private final EventBus eventBus;
     private final Provider<BackupRegistry> backupRegistryProvider;
-    private final ApacheHttpClient4 discoveryApacheClient;
+    private final Client discoveryApacheClient;
     private EurekaJerseyClient discoveryJerseyClient;
 
     private volatile HealthCheckHandler healthCheckHandler;
@@ -210,7 +185,7 @@ public class DiscoveryClient implements EurekaClient {
         private Provider<HealthCheckHandler> healthCheckHandlerProvider;
 
         @Inject(optional = true)
-        private Collection<ClientFilter> additionalFilters;
+        private Collection<ClientRequestFilter> additionalFilters;
 
         @Inject(optional = true)
         private EurekaJerseyClient eurekaJerseyClient;
@@ -230,7 +205,7 @@ public class DiscoveryClient implements EurekaClient {
             this.healthCheckHandlerProvider = healthCheckHandlerProvider;
         }
 
-        public void setAdditionalFilters(Collection<ClientFilter> additionalFilters) {
+        public void setAdditionalFilters(Collection<ClientRequestFilter> additionalFilters) {
             this.additionalFilters = additionalFilters;
         }
 
@@ -393,18 +368,18 @@ public class DiscoveryClient implements EurekaClient {
             if (enableGZIPContentEncodingFilter) {
                 // compressed only if there exists a 'Content-Encoding' header
                 // whose value is "gzip"
-                discoveryApacheClient.addFilter(new GZIPContentEncodingFilter(false));
+                discoveryApacheClient.register(new GZipEncoder());
             }
 
             // always enable client identity headers
             String ip = instanceInfo == null ? null : instanceInfo.getIPAddr();
             EurekaClientIdentity identity = new EurekaClientIdentity(ip);
-            discoveryApacheClient.addFilter(new EurekaIdentityHeaderFilter(identity));
+            discoveryApacheClient.register(new EurekaIdentityHeaderFilter(identity));
 
             // add additional ClientFilters if specified
             if (args != null && args.additionalFilters != null) {
-                for (ClientFilter filter : args.additionalFilters) {
-                    discoveryApacheClient.addFilter(filter);
+                for (ClientRequestFilter filter : args.additionalFilters) {
+                    discoveryApacheClient.register(filter);
                 }
             }
 
@@ -489,13 +464,12 @@ public class DiscoveryClient implements EurekaClient {
 
     /**
      * Register {@link HealthCheckCallback} with the eureka client.
-     *
+     * <p>
      * Once registered, the eureka client will invoke the
      * {@link HealthCheckCallback} in intervals specified by
      * {@link EurekaClientConfig#getInstanceInfoReplicationIntervalSeconds()}.
      *
      * @param callback app specific healthcheck.
-     *
      * @deprecated Use
      */
     @Deprecated
@@ -522,10 +496,8 @@ public class DiscoveryClient implements EurekaClient {
     /**
      * Gets the list of instances matching the given VIP Address.
      *
-     * @param vipAddress
-     *            - The VIP address to match the instances for.
-     * @param secure
-     *            - true if it is a secure vip address, false otherwise
+     * @param vipAddress - The VIP address to match the instances for.
+     * @param secure     - true if it is a secure vip address, false otherwise
      * @return - The list of {@link InstanceInfo} objects matching the criteria
      */
     @Override
@@ -537,10 +509,9 @@ public class DiscoveryClient implements EurekaClient {
      * Gets the list of instances matching the given VIP Address in the passed region.
      *
      * @param vipAddress - The VIP address to match the instances for.
-     * @param secure - true if it is a secure vip address, false otherwise
-     * @param region - region from which the instances are to be fetched. If <code>null</code> then local region is
-     *               assumed.
-     *
+     * @param secure     - true if it is a secure vip address, false otherwise
+     * @param region     - region from which the instances are to be fetched. If <code>null</code> then local region is
+     *                   assumed.
      * @return - The list of {@link InstanceInfo} objects matching the criteria, empty list if not instances found.
      */
     @Override
@@ -576,12 +547,9 @@ public class DiscoveryClient implements EurekaClient {
      * application name if both of them are not null. If one of them is null,
      * then that criterion is completely ignored for matching instances.
      *
-     * @param vipAddress
-     *            - The VIP address to match the instances for.
-     * @param appName
-     *            - The applicationName to match the instances for.
-     * @param secure
-     *            - true if it is a secure vip address, false otherwise.
+     * @param vipAddress - The VIP address to match the instances for.
+     * @param appName    - The applicationName to match the instances for.
+     * @param secure     - true if it is a secure vip address, false otherwise.
      * @return - The list of {@link InstanceInfo} objects matching the criteria.
      */
     @Override
@@ -656,17 +624,16 @@ public class DiscoveryClient implements EurekaClient {
     /**
      * Get all applications registered with a specific eureka service.
      *
-     * @param serviceUrl
-     *            - The string representation of the service url.
+     * @param serviceUrl - The string representation of the service url.
      * @return - The registry information containing all applications.
      */
     @Override
     public Applications getApplications(String serviceUrl) {
-        ClientResponse response = null;
+        Response response = null;
         Applications apps = null;
         try {
             response = makeRemoteCall(Action.Refresh);
-            apps = response.getEntity(Applications.class);
+            apps = response.readEntity(Applications.class);
             logger.debug(PREFIX + appPathIdentifier + " -  refresh status: "
                     + response.getStatus());
             return apps;
@@ -687,10 +654,9 @@ public class DiscoveryClient implements EurekaClient {
     /**
      * Checks to see if the eureka client registration is enabled.
      *
-     * @param myInfo
-     *            - The instance info object
+     * @param myInfo - The instance info object
      * @return - true, if the instance should be registered with eureka, false
-     *         otherwise
+     * otherwise
      */
     private boolean shouldRegister(InstanceInfo myInfo) {
         if (!clientConfig.shouldRegisterWithEureka()) {
@@ -705,7 +671,7 @@ public class DiscoveryClient implements EurekaClient {
      */
     boolean register() throws Throwable {
         logger.info(PREFIX + appPathIdentifier + ": registering service...");
-        ClientResponse response = null;
+        Response response = null;
         try {
             response = makeRemoteCall(Action.Register);
             isRegisteredWithDiscovery = true;
@@ -726,7 +692,7 @@ public class DiscoveryClient implements EurekaClient {
      * Renew with the eureka service by making the appropriate REST call
      */
     boolean renew() {
-        ClientResponse response = null;
+        Response response = null;
         try {
             response = makeRemoteCall(Action.Renew);
             logger.debug("{} - Heartbeat status: {}", PREFIX + appPathIdentifier,
@@ -753,7 +719,7 @@ public class DiscoveryClient implements EurekaClient {
     /**
      * Get the list of all eureka service urls from properties file for the eureka client to talk to.
      *
-     * @param instanceZone The zone in which the client resides
+     * @param instanceZone   The zone in which the client resides
      * @param preferSameZone true if we have to prefer the same zone as the client, false otherwise
      * @return The list of all eureka service urls for the eureka client to talk to
      */
@@ -873,7 +839,7 @@ public class DiscoveryClient implements EurekaClient {
      * unregister w/ the eureka service.
      */
     void unregister() {
-        ClientResponse response = null;
+        Response response = null;
         try {
             response = makeRemoteCall(Action.Cancel);
 
@@ -894,18 +860,17 @@ public class DiscoveryClient implements EurekaClient {
 
     /**
      * Fetches the registry information.
-     *
+     * <p>
      * <p>
      * This method tries to get only deltas after the first fetch unless there
      * is an issue in reconciling eureka server and client registry information.
      * </p>
      *
      * @param forceFullRegistryFetch Forces a full registry fetch.
-     *
      * @return true if the registry was fetched
      */
     private boolean fetchRegistry(boolean forceFullRegistryFetch) {
-        ClientResponse response = null;
+        Response response = null;
         Stopwatch tracer = FETCH_REGISTRY_TIMER.start();
 
         try {
@@ -1005,23 +970,22 @@ public class DiscoveryClient implements EurekaClient {
     /**
      * Gets the full registry information from the eureka server and stores it locally.
      * When applying the full registry, the following flow is observed:
-     *
+     * <p>
      * if (update generation have not advanced (due to another thread))
-     *   atomically set the registry to the new registry
+     * atomically set the registry to the new registry
      * fi
      *
      * @return the full registry information.
-     * @throws Throwable
-     *             on error.
+     * @throws Throwable on error.
      */
-    private ClientResponse getAndStoreFullRegistry() throws Throwable {
+    private Response getAndStoreFullRegistry() throws Throwable {
         long currentUpdateGeneration = fetchRegistryGeneration.get();
-        ClientResponse response = makeRemoteCall(Action.Refresh);
+        Response response = makeRemoteCall(Action.Refresh);
         logger.info("Getting all instance registry info from the eureka server");
 
         Applications apps = null;
         if (response.getStatus() == Status.OK.getStatusCode()) {
-            apps = response.getEntity(Applications.class);
+            apps = response.readEntity(Applications.class);
         }
 
         if (apps == null) {
@@ -1039,23 +1003,23 @@ public class DiscoveryClient implements EurekaClient {
     /**
      * Get the delta registry information from the eureka server and update it locally.
      * When applying the delta, the following flow is observed:
-     *
+     * <p>
      * if (update generation have not advanced (due to another thread))
-     *   atomically try to: update application with the delta and get reconcileHashCode
-     *   abort entire processing otherwise
-     *   do reconciliation if reconcileHashCode clash
+     * atomically try to: update application with the delta and get reconcileHashCode
+     * abort entire processing otherwise
+     * do reconciliation if reconcileHashCode clash
      * fi
      *
      * @return the client response
      * @throws Throwable on error
      */
-    private ClientResponse getAndUpdateDelta(Applications applications) throws Throwable {
+    private Response getAndUpdateDelta(Applications applications) throws Throwable {
         long currentUpdateGeneration = fetchRegistryGeneration.get();
-        ClientResponse response = makeRemoteCall(Action.Refresh_Delta);
+        Response response = makeRemoteCall(Action.Refresh_Delta);
 
         Applications delta = null;
         if (response.getStatus() == Status.OK.getStatusCode()) {
-            delta = response.getEntity(Applications.class);
+            delta = response.readEntity(Applications.class);
         }
         if (delta == null) {
             logger.warn("The server does not allow the delta revision to be applied because it is not safe. "
@@ -1105,25 +1069,21 @@ public class DiscoveryClient implements EurekaClient {
     /**
      * Reconcile the eureka server and client registry information and logs the differences if any.
      * When reconciling, the following flow is observed:
-     *
+     * <p>
      * make a remote call to the server for the full registry
      * calculate and log differences
      * if (update generation have not advanced (due to another thread))
-     *   atomically set the registry to the new registry
+     * atomically set the registry to the new registry
      * fi
      *
-     * @param response
-     *            the HTTP response after getting the full registry.
-     * @param delta
-     *            the last delta registry information received from the eureka
-     *            server.
-     * @param reconcileHashCode
-     *            the hashcode generated by the server for reconciliation.
+     * @param response          the HTTP response after getting the full registry.
+     * @param delta             the last delta registry information received from the eureka
+     *                          server.
+     * @param reconcileHashCode the hashcode generated by the server for reconciliation.
      * @return ClientResponse the HTTP response object.
-     * @throws Throwable
-     *             on any error.
+     * @throws Throwable on any error.
      */
-    private ClientResponse reconcileAndLogDifference(ClientResponse response,
+    private Response reconcileAndLogDifference(Response response,
                                                      Applications delta, String reconcileHashCode) throws Throwable {
         logger.warn(
                 "The Reconcile hashcodes do not match, client : {}, server : {}. Getting the full registry",
@@ -1135,7 +1095,7 @@ public class DiscoveryClient implements EurekaClient {
 
         long currentUpdateGeneration = fetchRegistryGeneration.get();
         response = makeRemoteCall(Action.Refresh);
-        Applications serverApps = response.getEntity(Applications.class);
+        Applications serverApps = response.readEntity(Applications.class);
 
         try {
             Map<String, List<String>> reconcileDiffMap = getApplications().getReconcileMapDiff(serverApps);
@@ -1170,9 +1130,8 @@ public class DiscoveryClient implements EurekaClient {
      * Updates the delta information fetches from the eureka server into the
      * local cache.
      *
-     * @param delta
-     *            the delta information received from eureka server in the last
-     *            poll cycle.
+     * @param delta the delta information received from eureka server in the last
+     *              poll cycle.
      */
     private void updateDelta(Applications delta) {
         int deltaCount = 0;
@@ -1241,14 +1200,12 @@ public class DiscoveryClient implements EurekaClient {
     /**
      * Makes remote calls with the corresponding action(register,renew etc).
      *
-     * @param action
-     *            the action to be performed on eureka server.
+     * @param action the action to be performed on eureka server.
      * @return ClientResponse the HTTP response object.
-     * @throws Throwable
-     *             on any error.
+     * @throws Throwable on any error.
      */
-    private ClientResponse makeRemoteCall(Action action) throws Throwable {
-        ClientResponse response;
+    private Response makeRemoteCall(Action action) throws Throwable {
+        Response response;
         if (isQueryAction(action)) {
             response = makeRemoteCallToRedirectedServer(lastQueryRedirect, action);
         } else {
@@ -1260,11 +1217,11 @@ public class DiscoveryClient implements EurekaClient {
         return response;
     }
 
-    private ClientResponse makeRemoteCallToRedirectedServer(AtomicReference<String> lastRedirect, Action action) {
+    private Response makeRemoteCallToRedirectedServer(AtomicReference<String> lastRedirect, Action action) {
         String lastRedirectUrl = lastRedirect.get();
         if (lastRedirectUrl != null) {
             try {
-                ClientResponse clientResponse = makeRemoteCall(action, lastRedirectUrl);
+                Response clientResponse = makeRemoteCall(action, lastRedirectUrl);
                 int status = clientResponse.getStatus();
                 if (status >= 200 && status < 300) {
                     return clientResponse;
@@ -1287,17 +1244,14 @@ public class DiscoveryClient implements EurekaClient {
     /**
      * Makes remote calls with the corresponding action(register,renew etc).
      *
-     * @param action
-     *            the action to be performed on eureka server.
-     *
-     *            Try the fallback servers in case of problems communicating to
-     *            the primary one.
-     *
+     * @param action the action to be performed on eureka server.
+     *               <p>
+     *               Try the fallback servers in case of problems communicating to
+     *               the primary one.
      * @return ClientResponse the HTTP response object.
-     * @throws Throwable
-     *             on any error.
+     * @throws Throwable on any error.
      */
-    private ClientResponse makeRemoteCall(Action action, int serviceUrlIndex) throws Throwable {
+    private Response makeRemoteCall(Action action, int serviceUrlIndex) throws Throwable {
         String serviceUrl;
         try {
             serviceUrl = eurekaServiceUrls.get().get(serviceUrlIndex);
@@ -1315,10 +1269,10 @@ public class DiscoveryClient implements EurekaClient {
         }
     }
 
-    private ClientResponse makeRemoteCallWithFollowRedirect(Action action, String serviceUrl) throws Throwable {
+    private Response makeRemoteCallWithFollowRedirect(Action action, String serviceUrl) throws Throwable {
         URI targetUrl = new URI(serviceUrl);
         for (int followRedirectCount = 0; followRedirectCount < MAX_FOLLOWED_REDIRECTS; followRedirectCount++) {
-            ClientResponse clientResponse = makeRemoteCall(action, targetUrl.toString());
+            Response clientResponse = makeRemoteCall(action, targetUrl.toString());
             if (clientResponse.getStatus() != 302) {
                 if (followRedirectCount > 0) {
                     if (isQueryAction(action)) {
@@ -1355,17 +1309,14 @@ public class DiscoveryClient implements EurekaClient {
     /**
      * Makes remote calls with the corresponding action(register,renew etc).
      *
-     * @param action
-     *            the action to be performed on eureka server.
-     *
+     * @param action the action to be performed on eureka server.
      * @return ClientResponse the HTTP response object.
-     * @throws Throwable
-     *             on any error.
+     * @throws Throwable on any error.
      */
-    private ClientResponse makeRemoteCall(Action action, String serviceUrl) throws Throwable {
+    private Response makeRemoteCall(Action action, String serviceUrl) throws Throwable {
         String urlPath = null;
         Stopwatch tracer = null;
-        ClientResponse response = null;
+        Response response = null;
         logger.debug("Discovery Client talking to the server {}, action {}", serviceUrl, action);
         try {
             // If the application is unknown do not register/renew/cancel but
@@ -1375,22 +1326,13 @@ public class DiscoveryClient implements EurekaClient {
                     .equals(action)))) {
                 return null;
             }
-            WebResource r = discoveryApacheClient.resource(serviceUrl);
-            if (clientConfig.allowRedirects()) {
-                r.header(HTTP_X_DISCOVERY_ALLOW_REDIRECT, "true");
-            }
+            WebTarget webTarget = discoveryApacheClient.target(serviceUrl);
             String remoteRegionsToFetchStr;
             switch (action) {
                 case Renew:
                     tracer = RENEW_TIMER.start();
                     urlPath = "apps/" + appPathIdentifier;
-                    response = r
-                            .path(urlPath)
-                            .queryParam("status",
-                                    instanceInfo.getStatus().toString())
-                            .queryParam("lastDirtyTimestamp",
-                                    instanceInfo.getLastDirtyTimestamp().toString())
-                            .put(ClientResponse.class);
+                    response = renewAction(webTarget, urlPath);
                     break;
                 case Refresh:
                     tracer = REFRESH_TIMER.start();
@@ -1414,14 +1356,12 @@ public class DiscoveryClient implements EurekaClient {
                 case Register:
                     tracer = REGISTER_TIMER.start();
                     urlPath = "apps/" + instanceInfo.getAppName();
-                    response = r.path(urlPath)
-                            .type(MediaType.APPLICATION_JSON_TYPE)
-                            .post(ClientResponse.class, instanceInfo);
+                    response = registerAction(webTarget, urlPath);
                     break;
                 case Cancel:
                     tracer = CANCEL_TIMER.start();
                     urlPath = "apps/" + appPathIdentifier;
-                    response = r.path(urlPath).delete(ClientResponse.class);
+                    response = cancelAction(webTarget, urlPath);
                     // Return without during de-registration if it is not registered
                     // already and if we get a 404
                     if ((!isRegisteredWithDiscovery)
@@ -1456,13 +1396,41 @@ public class DiscoveryClient implements EurekaClient {
         }
     }
 
+    private Response renewAction(WebTarget target, String path) {
+        Invocation.Builder builder = target
+                .path(path)
+                .queryParam("status", instanceInfo.getStatus().toString())
+                .queryParam("lastDirtyTimestamp", instanceInfo.getLastDirtyTimestamp().toString())
+                .request();
+        if (clientConfig.allowRedirects()) {
+            builder.header(HTTP_X_DISCOVERY_ALLOW_REDIRECT, "true");
+        }
+        return builder.put(Entity.entity(null, MediaType.APPLICATION_JSON_TYPE));
+    }
+
+    private Response registerAction(WebTarget target, String path) {
+        Invocation.Builder builder = target.path(path).request();
+        if (clientConfig.allowRedirects()) {
+            builder.header(HTTP_X_DISCOVERY_ALLOW_REDIRECT, "true");
+        }
+        return builder.post(Entity.entity(instanceInfo, MediaType.APPLICATION_JSON_TYPE));
+    }
+
+    private Response cancelAction(WebTarget target, String path) {
+        Invocation.Builder builder = target.path(path).request();
+        if (clientConfig.allowRedirects()) {
+            builder.header(HTTP_X_DISCOVERY_ALLOW_REDIRECT, "true");
+        }
+        return builder.delete();
+    }
+
+
     /**
      * Close HTTP response object and its respective resources.
      *
-     * @param response
-     *            the HttpResponse object.
+     * @param response the HttpResponse object.
      */
-    private void closeResponse(ClientResponse response) {
+    private void closeResponse(Response response) {
         if (response != null) {
             try {
                 response.close();
@@ -1556,7 +1524,7 @@ public class DiscoveryClient implements EurekaClient {
      * other zones randomly. If there are multiple servers in the same zone, the client once
      * again picks one randomly. This way the traffic will be distributed in the case of failures.
      *
-     * @param instanceZone The zone in which the client resides.
+     * @param instanceZone   The zone in which the client resides.
      * @param preferSameZone true if we have to prefer the same zone as the client, false otherwise.
      * @return The list of all eureka service urls for the eureka client to talk to.
      */
@@ -1657,13 +1625,11 @@ public class DiscoveryClient implements EurekaClient {
     }
 
     /**
-     * @deprecated see {@link com.netflix.appinfo.InstanceInfo#getZone(String[], com.netflix.appinfo.InstanceInfo)}
-     *
-     * Get the zone that a particular instance is in.
-     *
-     * @param myInfo
-     *            - The InstanceInfo object of the instance.
+     * @param myInfo - The InstanceInfo object of the instance.
      * @return - The zone in which the particular instance belongs to.
+     * @deprecated see {@link com.netflix.appinfo.InstanceInfo#getZone(String[], com.netflix.appinfo.InstanceInfo)}
+     * <p>
+     * Get the zone that a particular instance is in.
      */
     @Deprecated
     public static String getZone(InstanceInfo myInfo) {
@@ -1688,10 +1654,9 @@ public class DiscoveryClient implements EurekaClient {
     /**
      * Get the zone based CNAMES that are bound to a region.
      *
-     * @param region
-     *            - The region for which the zone names need to be retrieved
+     * @param region - The region for which the zone names need to be retrieved
      * @return - The list of CNAMES from which the zone-related information can
-     *         be retrieved
+     * be retrieved
      */
     static Map<String, List<String>> getZoneBasedDiscoveryUrlsFromRegion(
             String region) {
@@ -1740,10 +1705,8 @@ public class DiscoveryClient implements EurekaClient {
     /**
      * Get the list of EC2 URLs given the zone name.
      *
-     * @param dnsName
-     *            - The dns name of the zone-specific CNAME
-     * @param type
-     *            - CNAME or EIP that needs to be retrieved
+     * @param dnsName - The dns name of the zone-specific CNAME
+     * @param type    - CNAME or EIP that needs to be retrieved
      * @return - The list of EC2 URLs associated with the dns name
      */
     public static Set<String> getEC2DiscoveryUrlsFromZone(String dnsName,
@@ -1785,7 +1748,6 @@ public class DiscoveryClient implements EurekaClient {
 
     /**
      * Gets the zone to pick up for this instance.
-     *
      */
     private static int getZoneOffset(String myZone, boolean preferSameZone,
                                      String[] availZones) {
@@ -1803,7 +1765,6 @@ public class DiscoveryClient implements EurekaClient {
 
     /**
      * Check if the http status code is a success for the given action.
-     *
      */
     private boolean isOk(Action action, int httpStatus) {
         if (httpStatus >= 200 && httpStatus < 300 || httpStatus == 302) {
@@ -1844,11 +1805,11 @@ public class DiscoveryClient implements EurekaClient {
         return instanceToReturn;
     }
 
-    private ClientResponse getUrl(String fullServiceUrl) {
-        ClientResponse cr = discoveryApacheClient.resource(fullServiceUrl)
+    private Response getUrl(String fullServiceUrl) {
+        Response cr = discoveryApacheClient.target(fullServiceUrl).request()
                 .accept(MediaType.APPLICATION_JSON_TYPE)
                 .header(EurekaAccept.HTTP_X_EUREKA_ACCEPT, clientAccept.name())
-                .get(ClientResponse.class);
+                .get();
 
         return cr;
     }
@@ -1915,7 +1876,6 @@ public class DiscoveryClient implements EurekaClient {
 
     /**
      * The task that fetches the registry information at specified intervals.
-     *
      */
     class CacheRefreshThread implements Runnable {
         public void run() {
@@ -2021,8 +1981,7 @@ public class DiscoveryClient implements EurekaClient {
     /**
      * Gets the task that is responsible for fetching the eureka service Urls.
      *
-     * @param zone
-     *            the zone in which the instance resides.
+     * @param zone the zone in which the instance resides.
      * @return TimerTask the task which executes periodically.
      */
     private TimerTask getServiceUrlUpdateTask(final String zone) {
@@ -2055,7 +2014,7 @@ public class DiscoveryClient implements EurekaClient {
     /**
      * Gets the <em>applications</em> after filtering the applications for
      * instances with only UP states and shuffling them.
-     *
+     * <p>
      * <p>
      * The filtering depends on the option specified by the configuration
      * {@link EurekaClientConfig#shouldFilterOnlyUpInstances()}. Shuffling helps
@@ -2063,8 +2022,7 @@ public class DiscoveryClient implements EurekaClient {
      * receiving traffic during start ups.
      * </p>
      *
-     * @param apps
-     *            The applications that needs to be filtered and shuffled.
+     * @param apps The applications that needs to be filtered and shuffled.
      * @return The applications after the filter and the shuffle.
      */
     private Applications filterAndShuffle(Applications apps) {
@@ -2124,7 +2082,7 @@ public class DiscoveryClient implements EurekaClient {
     /**
      * Invoked every time the local registry cache is refreshed (whether changes have
      * been detected or not).
-     *
+     * <p>
      * Subclasses may override this method to implement custom behavior if needed.
      */
     protected void onCacheRefreshed() {

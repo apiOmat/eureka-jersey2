@@ -1,12 +1,5 @@
 package com.netflix.eureka.cluster;
 
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.Response.Status;
-import java.net.InetAddress;
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.net.UnknownHostException;
-
 import com.netflix.appinfo.InstanceInfo;
 import com.netflix.appinfo.InstanceInfo.InstanceStatus;
 import com.netflix.discovery.EurekaIdentityHeaderFilter;
@@ -18,13 +11,20 @@ import com.netflix.eureka.EurekaServerIdentity;
 import com.netflix.eureka.cluster.protocol.ReplicationList;
 import com.netflix.eureka.cluster.protocol.ReplicationListResponse;
 import com.netflix.eureka.resources.ASGResource.ASGStatus;
-import com.sun.jersey.api.client.Client;
-import com.sun.jersey.api.client.ClientResponse;
-import com.sun.jersey.api.client.WebResource;
-import com.sun.jersey.api.client.WebResource.Builder;
-import com.sun.jersey.client.apache4.ApacheHttpClient4;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.ws.rs.client.Client;
+import javax.ws.rs.client.Entity;
+import javax.ws.rs.client.Invocation;
+import javax.ws.rs.client.WebTarget;
+import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
+import javax.ws.rs.core.Response.Status;
+import java.net.InetAddress;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.net.UnknownHostException;
 
 /**
  * @author Tomasz Bak
@@ -34,7 +34,7 @@ public class JerseyReplicationClient extends JerseyEurekaHttpClient implements H
     private static final Logger logger = LoggerFactory.getLogger(JerseyReplicationClient.class);
 
     private final EurekaJerseyClient jerseyClient;
-    private final ApacheHttpClient4 jerseyApacheClient;
+    private final Client jerseyApacheClient;
 
     public JerseyReplicationClient(EurekaServerConfig config, String serviceUrl) {
         super(serviceUrl);
@@ -64,7 +64,8 @@ public class JerseyReplicationClient extends JerseyEurekaHttpClient implements H
             }
             jerseyClient = clientBuilder.build();
             jerseyApacheClient = jerseyClient.getClient();
-            jerseyApacheClient.addFilter(new DynamicGZIPContentEncodingFilter(config));
+            // TODO: Fix this
+//            jerseyApacheClient.addFilter(new DynamicGZIPContentEncodingFilter(config));
         } catch (Throwable e) {
             throw new RuntimeException("Cannot Create new Replica Node :" + name, e);
         }
@@ -76,7 +77,7 @@ public class JerseyReplicationClient extends JerseyEurekaHttpClient implements H
             logger.warn("Cannot find localhost ip", e);
         }
         EurekaServerIdentity identity = new EurekaServerIdentity(ip);
-        jerseyApacheClient.addFilter(new EurekaIdentityHeaderFilter(identity));
+        jerseyApacheClient.register(new EurekaIdentityHeaderFilter(identity));
     }
 
     @Override
@@ -85,7 +86,7 @@ public class JerseyReplicationClient extends JerseyEurekaHttpClient implements H
     }
 
     @Override
-    protected void addExtraHeaders(Builder webResource) {
+    protected void addExtraHeaders(Invocation.Builder webResource) {
         webResource.header(PeerEurekaNode.HEADER_REPLICATION, "true");
     }
 
@@ -96,21 +97,21 @@ public class JerseyReplicationClient extends JerseyEurekaHttpClient implements H
     @Override
     public HttpResponse<InstanceInfo> sendHeartBeat(String appName, String id, InstanceInfo info, InstanceStatus overriddenStatus) {
         String urlPath = "apps/" + appName + '/' + id;
-        ClientResponse response = null;
+        Response response = null;
         try {
-            WebResource webResource = getJerseyClient().resource(serviceUrl)
+            WebTarget webTarget = getJerseyClient().target(serviceUrl)
                     .path(urlPath)
                     .queryParam("status", info.getStatus().toString())
                     .queryParam("lastDirtyTimestamp", info.getLastDirtyTimestamp().toString());
             if (overriddenStatus != null) {
-                webResource = webResource.queryParam("overriddenstatus", overriddenStatus.name());
+                webTarget = webTarget.queryParam("overriddenstatus", overriddenStatus.name());
             }
-            Builder requestBuilder = webResource.getRequestBuilder();
+            Invocation.Builder requestBuilder = webTarget.request();
             addExtraHeaders(requestBuilder);
-            response = requestBuilder.accept(MediaType.APPLICATION_JSON_TYPE).put(ClientResponse.class);
+            response = requestBuilder.accept(MediaType.APPLICATION_JSON_TYPE).put(Entity.entity(null, MediaType.APPLICATION_JSON_TYPE));
             InstanceInfo infoFromPeer = null;
             if (response.getStatus() == Status.CONFLICT.getStatusCode() && response.hasEntity()) {
-                infoFromPeer = response.getEntity(InstanceInfo.class);
+                infoFromPeer = response.readEntity(InstanceInfo.class);
             }
             return HttpResponse.responseWith(response.getStatus(), infoFromPeer);
         } finally {
@@ -125,14 +126,15 @@ public class JerseyReplicationClient extends JerseyEurekaHttpClient implements H
 
     @Override
     public HttpResponse<Void> statusUpdate(String asgName, ASGStatus newStatus) {
-        ClientResponse response = null;
+        Response response = null;
         try {
             String urlPath = "asg/" + asgName + "/status";
-            response = jerseyApacheClient.resource(serviceUrl)
+            response = jerseyApacheClient.target(serviceUrl)
                     .path(urlPath)
                     .queryParam("value", newStatus.name())
+                    .request()
                     .header(PeerEurekaNode.HEADER_REPLICATION, "true")
-                    .put(ClientResponse.class);
+                    .put(Entity.entity(null, MediaType.APPLICATION_JSON_TYPE));
             return HttpResponse.responseWith(response.getStatus());
         } finally {
             if (response != null) {
@@ -143,17 +145,17 @@ public class JerseyReplicationClient extends JerseyEurekaHttpClient implements H
 
     @Override
     public HttpResponse<ReplicationListResponse> submitBatchUpdates(ReplicationList replicationList) {
-        ClientResponse response = null;
+        Response response = null;
         try {
-            response = jerseyApacheClient.resource(serviceUrl)
+            response = jerseyApacheClient.target(serviceUrl)
                     .path(PeerEurekaNode.BATCH_URL_PATH)
+                    .request()
                     .accept(MediaType.APPLICATION_JSON_TYPE)
-                    .type(MediaType.APPLICATION_JSON_TYPE)
-                    .post(ClientResponse.class, replicationList);
+                    .post(Entity.entity(replicationList, MediaType.APPLICATION_JSON_TYPE));
             if (!isSuccess(response.getStatus())) {
                 return HttpResponse.responseWith(response.getStatus());
             }
-            ReplicationListResponse batchResponse = response.getEntity(ReplicationListResponse.class);
+            ReplicationListResponse batchResponse = response.readEntity(ReplicationListResponse.class);
             return HttpResponse.responseWith(response.getStatus(), batchResponse);
         } finally {
             if (response != null) {
