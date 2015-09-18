@@ -3,6 +3,7 @@ package com.netflix.eureka.cluster;
 import com.netflix.appinfo.InstanceInfo;
 import com.netflix.appinfo.InstanceInfo.InstanceStatus;
 import com.netflix.discovery.EurekaIdentityHeaderFilter;
+import com.netflix.discovery.provider.EmptyEntity;
 import com.netflix.discovery.shared.EurekaJerseyClient;
 import com.netflix.discovery.shared.EurekaJerseyClientImpl.EurekaJerseyClientBuilder;
 import com.netflix.discovery.shared.JerseyEurekaHttpClient;
@@ -108,7 +109,9 @@ public class JerseyReplicationClient extends JerseyEurekaHttpClient implements H
             }
             Invocation.Builder requestBuilder = webTarget.request();
             addExtraHeaders(requestBuilder);
-            response = requestBuilder.accept(MediaType.APPLICATION_JSON_TYPE).put(Entity.entity(null, MediaType.APPLICATION_JSON_TYPE));
+            response = requestBuilder
+                    .accept(MediaType.APPLICATION_JSON_TYPE)
+                    .put(Entity.json(new EmptyEntity()));
             InstanceInfo infoFromPeer = null;
             if (response.getStatus() == Status.CONFLICT.getStatusCode() && response.hasEntity()) {
                 infoFromPeer = response.readEntity(InstanceInfo.class);
@@ -134,7 +137,7 @@ public class JerseyReplicationClient extends JerseyEurekaHttpClient implements H
                     .queryParam("value", newStatus.name())
                     .request()
                     .header(PeerEurekaNode.HEADER_REPLICATION, "true")
-                    .put(Entity.entity(null, MediaType.APPLICATION_JSON_TYPE));
+                    .put(Entity.json(new EmptyEntity()));
             return HttpResponse.responseWith(response.getStatus());
         } finally {
             if (response != null) {
@@ -151,7 +154,7 @@ public class JerseyReplicationClient extends JerseyEurekaHttpClient implements H
                     .path(PeerEurekaNode.BATCH_URL_PATH)
                     .request()
                     .accept(MediaType.APPLICATION_JSON_TYPE)
-                    .post(Entity.entity(replicationList, MediaType.APPLICATION_JSON_TYPE));
+                    .post(Entity.json(replicationList));
             if (!isSuccess(response.getStatus())) {
                 return HttpResponse.responseWith(response.getStatus());
             }

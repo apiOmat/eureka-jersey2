@@ -2,6 +2,7 @@ package com.netflix.discovery.shared;
 
 import com.netflix.appinfo.InstanceInfo;
 import com.netflix.appinfo.InstanceInfo.InstanceStatus;
+import com.netflix.discovery.provider.EmptyEntity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,7 +39,7 @@ public abstract class JerseyEurekaHttpClient implements EurekaHttpClient {
             response = builder
                     .header("Accept-Encoding", "gzip")
                     .accept(MediaType.APPLICATION_JSON)
-                    .post(Entity.entity(info, MediaType.APPLICATION_JSON_TYPE));
+                    .post(Entity.json(info));
             return HttpResponse.responseWith(response.getStatus());
         } finally {
             if (logger.isDebugEnabled()) {
@@ -106,7 +107,7 @@ public abstract class JerseyEurekaHttpClient implements EurekaHttpClient {
                     .queryParam("lastDirtyTimestamp", info.getLastDirtyTimestamp().toString())
                     .request();
             addExtraHeaders(requestBuilder);
-            response = requestBuilder.put(Entity.entity(null, MediaType.APPLICATION_JSON_TYPE));
+            response = requestBuilder.put(Entity.json(new EmptyEntity()));
             return HttpResponse.responseWith(response.getStatus());
         } finally {
             if (logger.isDebugEnabled()) {

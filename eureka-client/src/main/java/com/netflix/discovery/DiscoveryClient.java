@@ -24,6 +24,7 @@ import com.google.inject.Provider;
 import com.netflix.appinfo.*;
 import com.netflix.appinfo.InstanceInfo.ActionType;
 import com.netflix.appinfo.InstanceInfo.InstanceStatus;
+import com.netflix.discovery.provider.EmptyEntity;
 import com.netflix.discovery.shared.Application;
 import com.netflix.discovery.shared.Applications;
 import com.netflix.discovery.shared.EurekaJerseyClient;
@@ -1405,7 +1406,7 @@ public class DiscoveryClient implements EurekaClient {
         if (clientConfig.allowRedirects()) {
             builder.header(HTTP_X_DISCOVERY_ALLOW_REDIRECT, "true");
         }
-        return builder.put(Entity.entity(null, MediaType.APPLICATION_JSON_TYPE));
+        return builder.put(Entity.json(new EmptyEntity()));
     }
 
     private Response registerAction(WebTarget target, String path) {
@@ -1413,7 +1414,7 @@ public class DiscoveryClient implements EurekaClient {
         if (clientConfig.allowRedirects()) {
             builder.header(HTTP_X_DISCOVERY_ALLOW_REDIRECT, "true");
         }
-        return builder.post(Entity.entity(instanceInfo, MediaType.APPLICATION_JSON_TYPE));
+        return builder.post(Entity.json(instanceInfo));
     }
 
     private Response cancelAction(WebTarget target, String path) {

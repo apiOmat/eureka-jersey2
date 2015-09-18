@@ -6,7 +6,6 @@ dependencies {
     compile 'org.glassfish.jersey.core:jersey-common:2.21'
     compile 'org.glassfish.jersey.core:jersey-client:2.21'
     compile 'org.glassfish.jersey.core:jersey-server:2.21'
-
     compile 'org.glassfish.jersey.connectors:jersey-apache-connector:2.21'
 
 
