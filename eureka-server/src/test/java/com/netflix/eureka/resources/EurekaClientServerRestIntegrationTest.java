@@ -23,13 +23,14 @@ import com.netflix.eureka.cluster.protocol.ReplicationInstance;
 import com.netflix.eureka.cluster.protocol.ReplicationInstanceResponse;
 import com.netflix.eureka.cluster.protocol.ReplicationList;
 import com.netflix.eureka.cluster.protocol.ReplicationListResponse;
-import com.sun.jersey.api.client.filter.GZIPContentEncodingFilter;
-import com.sun.jersey.client.apache4.ApacheHttpClient4;
+import com.sun.jersey.api.container.filter.GZIPContentEncodingFilter;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.webapp.WebAppContext;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
+
+import javax.ws.rs.client.Client;
 
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.is;
@@ -77,7 +78,7 @@ public class EurekaClientServerRestIntegrationTest {
             public EurekaJerseyClient jerseyClient;
 
             @Override
-            protected ApacheHttpClient4 getJerseyClient() {
+            protected Client getJerseyClient() {
                 jerseyClient = new EurekaJerseyClientBuilder()
                         .withClientName("testEurekaClient")
                         .withConnectionTimeout(1000)
@@ -87,8 +88,8 @@ public class EurekaClientServerRestIntegrationTest {
                         .withConnectionIdleTimeout(1000)
                         .build();
 
-                ApacheHttpClient4 jerseyApacheClient = jerseyClient.getClient();
-                jerseyApacheClient.addFilter(new GZIPContentEncodingFilter(true));
+                Client jerseyApacheClient = jerseyClient.getClient();
+                jerseyApacheClient.register(new GZIPContentEncodingFilter());
                 return jerseyApacheClient;
             }
 
