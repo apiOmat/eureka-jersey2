@@ -6,10 +6,16 @@ import com.netflix.discovery.converters.wrappers.EncoderWrapper;
 import com.netflix.discovery.provider.DiscoveryJerseyProvider;
 import com.netflix.servo.monitor.*;
 import org.apache.http.client.params.ClientPNames;
+import org.apache.http.config.Registry;
+import org.apache.http.config.RegistryBuilder;
 import org.apache.http.conn.ClientConnectionManager;
+import org.apache.http.conn.HttpClientConnectionManager;
 import org.apache.http.conn.scheme.Scheme;
 import org.apache.http.conn.scheme.SchemeRegistry;
+import org.apache.http.conn.socket.ConnectionSocketFactory;
+import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.conn.ssl.SSLSocketFactory;
+import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
 import org.apache.http.params.CoreProtocolPNames;
 import org.glassfish.jersey.apache.connector.ApacheClientProperties;
 import org.glassfish.jersey.apache.connector.ApacheConnectorProvider;
@@ -211,18 +217,18 @@ public class EurekaJerseyClientImpl implements EurekaJerseyClient {
 
         class MyDefaultApacheHttpClient4Config extends ClientConfig {
             MyDefaultApacheHttpClient4Config() {
-                MonitoredConnectionManager cm;
+                PoolingHttpClientConnectionManager cm;
 
                 if (systemSSL) {
                     cm = createSystemSslCM();
                 } else if (trustStoreFileName != null) {
                     cm = createCustomSslCM();
                 } else {
-                    cm = new MonitoredConnectionManager(clientName);
+                    cm = new PoolingHttpClientConnectionManager();
                 }
 
                 if (proxyHost != null) {
-                    addProxyConfiguration(cm);
+                    addProxyConfiguration();
                 }
 
                 DiscoveryJerseyProvider discoveryJerseyProvider = new DiscoveryJerseyProvider(encoderWrapper, decoderWrapper);
@@ -244,7 +250,7 @@ public class EurekaJerseyClientImpl implements EurekaJerseyClient {
 
             }
 
-            private void addProxyConfiguration(MonitoredConnectionManager cm) {
+            private void addProxyConfiguration() {
                 if (proxyUserName != null && proxyPassword != null) {
                     property(ClientProperties.PROXY_USERNAME, proxyUserName);
                     property(ClientProperties.PROXY_PASSWORD, proxyPassword);
@@ -257,16 +263,17 @@ public class EurekaJerseyClientImpl implements EurekaJerseyClient {
                 property(ClientProperties.PROXY_URI, "http://" + proxyHost + ":" + proxyPort);
             }
 
-            private MonitoredConnectionManager createSystemSslCM() {
-                MonitoredConnectionManager cm;
-                SSLSocketFactory sslSocketFactory = SSLSocketFactory.getSystemSocketFactory();
-                SchemeRegistry sslSchemeRegistry = new SchemeRegistry();
-                sslSchemeRegistry.register(new Scheme(PROTOCOL, HTTPS_PORT, sslSocketFactory));
-                cm = new MonitoredConnectionManager(clientName, sslSchemeRegistry);
-                return cm;
+            private PoolingHttpClientConnectionManager createSystemSslCM() {
+                ConnectionSocketFactory socketFactory = SSLConnectionSocketFactory.getSystemSocketFactory();
+
+                Registry registry = RegistryBuilder.<ConnectionSocketFactory>create()
+                        .register(PROTOCOL, socketFactory)
+                        .build();
+
+                return new PoolingHttpClientConnectionManager(registry);
             }
 
-            private MonitoredConnectionManager createCustomSslCM() {
+            private PoolingHttpClientConnectionManager createCustomSslCM() {
                 FileInputStream fin = null;
                 try {
                     SSLContext sslContext = SSLContext.getInstance(PROTOCOL_SCHEME);
@@ -281,12 +288,15 @@ public class EurekaJerseyClientImpl implements EurekaJerseyClient {
                     TrustManager[] trustManagers = factory.getTrustManagers();
 
                     sslContext.init(null, trustManagers, null);
-                    SSLSocketFactory sslSocketFactory = new SSLSocketFactory(sslContext);
-                    sslSocketFactory.setHostnameVerifier(SSLSocketFactory.ALLOW_ALL_HOSTNAME_VERIFIER);
-                    SchemeRegistry sslSchemeRegistry = new SchemeRegistry();
-                    sslSchemeRegistry.register(new Scheme(PROTOCOL, HTTPS_PORT, sslSocketFactory));
 
-                    return new MonitoredConnectionManager(clientName, sslSchemeRegistry);
+                    ConnectionSocketFactory socketFactory =
+                            new SSLConnectionSocketFactory(sslContext, SSLConnectionSocketFactory.ALLOW_ALL_HOSTNAME_VERIFIER);
+
+                    Registry registry = RegistryBuilder.<ConnectionSocketFactory>create()
+                            .register(PROTOCOL, socketFactory)
+                            .build();
+
+                    return new PoolingHttpClientConnectionManager(registry);
                 } catch (Exception ex) {
                     throw new IllegalStateException("SSL configuration issue", ex);
                 } finally {
@@ -323,7 +333,7 @@ public class EurekaJerseyClientImpl implements EurekaJerseyClient {
         public void run() {
             Stopwatch start = executionTimeStats.start();
             try {
-                ClientConnectionManager cm = (ClientConnectionManager) apacheHttpClient
+                HttpClientConnectionManager cm = (HttpClientConnectionManager) apacheHttpClient
                         .getConfiguration()
                         .getProperty(ApacheClientProperties.CONNECTION_MANAGER);
                 cm.closeIdleConnections(connectionIdleTimeout, TimeUnit.SECONDS);
