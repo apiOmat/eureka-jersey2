@@ -65,8 +65,9 @@ public class JerseyReplicationClient extends JerseyEurekaHttpClient implements H
             }
             jerseyClient = clientBuilder.build();
             jerseyApacheClient = jerseyClient.getClient();
-            // TODO: Fix this
-//            jerseyApacheClient.addFilter(new DynamicGZIPContentEncodingFilter(config));
+
+            jerseyApacheClient.register(new DynamicGZIPContentConfigFilter(config));
+            jerseyApacheClient.register(new GZIPInterceptor());
         } catch (Throwable e) {
             throw new RuntimeException("Cannot Create new Replica Node :" + name, e);
         }
