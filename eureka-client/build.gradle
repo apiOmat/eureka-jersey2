@@ -1,6 +1,17 @@
 apply plugin: 'nebula-test-jar'
 apply plugin: 'provided-base'
 
+buildscript {
+    repositories { jcenter() }
+    dependencies {
+        classpath 'com.github.jengelman.gradle.plugins:shadow:1.2.1'
+    }
+}
+
+apply plugin: 'com.github.johnrengelman.shadow'
+
+
+
 dependencies {
 
     compile 'org.glassfish.jersey.core:jersey-common:2.21'
@@ -10,7 +21,9 @@ dependencies {
 
 
 
-    compile "com.netflix.netflix-commons:netflix-eventbus:0.1.2"
+    compile("com.netflix.netflix-commons:netflix-eventbus:0.1.2") {
+        exclude module: "servlet-api"
+    }
     compile 'com.thoughtworks.xstream:xstream:1.4.2'
     compile "com.netflix.archaius:archaius-core:${archaiusVersion}"
 //    compile 'javax.ws.rs:jsr311-api:1.1.1'
