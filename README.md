@@ -1,3 +1,5 @@
+*** EUREKA CLIENT JERSEY 2 ONLY ***
+
 Eureka
 =====
 [![Build Status](https://netflixoss.ci.cloudbees.com/job/NetflixOSS/job/eureka/job/eureka-snapshot/badge/icon)](https://netflixoss.ci.cloudbees.com/job/NetflixOSS/job/eureka/job/eureka-snapshot/)
